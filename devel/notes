@@ -1,0 +1,51 @@
+steps for model dataset prep
+
+read gps data for survey
+mark effort - standard + straight line
+(opt) get detection funs, mark trackpoints with diff functions
+break track into start/end points of straight + same det fun
+
+get grid of study area - polygon of track + some width? based on farthest localisation
+or just tight around localisations? or NO cant just hug locs, need "zeroes", so define
+a truncation distance and buffer that far
+connect grid **DONE**
+
+do for all track segs grid area and summitup
+
+match locs to grid
+get enviro and match to grid
+
+DO MODULINS
+
+
+from anne:
+dasbr map, tethys list
+
+Get localaizations in PAMr, then send those to distance and come back with det fun
+If we have effort-mapped to the gps, then throw that out to gridded effort
+
+Average across dates? One example on yvonnes date is between 9-16 and 10-16, theres 2 degree diff
+in SST between those two months (only time SST updates is monthly)
+
+attaching enviro data to a grid for modeling dataset - WHAT TIME VALUE DO YOU USE???
+
+lol oh god we are biased upward because we are always using a smaller effort value for the same number
+of detections??? seems like there should be away to reconcile this right?
+
+Hmm... maybe we arent. In the pictures, the ESW isnt actually guaranteed to reach out ot where the whale
+actually was, cuz its not out to truncation distance. And a lot of the time you add more area to the grid
+cell than what is in a given transect segment ( unless grid is centered relative to transect), so maybe its
+okay???
+
+Oh wait...effort depends directly on grid size. Is that okay? Less likely to have multiple detections in
+same grid, hmm. Should somehow make size comparable to line transect for more apples-apples?
+
+Good to just examine difference between enviro at boat, enviro at animals. Should be easy to compare
+right now based on detection time and gps trackline time.
+
+Another possible problem...ours is always 1 sided, theirs is always 2 sided? I think this is okay because
+we should have less detctions per row
+
+What happens if bounds or pre-existing grid is smaller than our gps trackline + buffer?
+
+In documentation highlight providing grid to thing again to save time

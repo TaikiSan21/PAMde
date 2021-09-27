@@ -1,0 +1,197 @@
+---
+title: "Gridded Line Transect Guide"
+author: "Taiki Sakai"
+date: "9/21/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background
+
+Distance sampling techniques we need a way to quantify how much effort went
+into finding each detection. Normally with line transect surveys this is done 
+in 3 steps. First we estimate a detection function function from all of our detections - this
+lets us estimate how far out we can detect animals. Then we break our survey trackline 
+into segments, and assign each detection to the segment in which it was detected. 
+Then for each segment we compute the approximate area surveyed by multiplying the 
+average detection distance from the deteciton function by the length of the trackline.
+This method has historically worked well visual line transect surveys, but for
+acoustic detections there are some potential problems. When using line transect data
+to create spatial density models, it is useful to assign environmental covariates like
+sea surface temperature or salinity to each detection. Since each detection is associated
+with a segment of trackline, we can use the location of the segment to get the matching
+environmental data. For visual surveys this is fine, since visual detection ranges are
+small relative to the scale at which environmental conditions may change (e.g. the
+sea surface temperature is unlikely to change across the distance that you can spot
+a whale). However, acoustics has the ability to detect certain species from upwards
+of 15 kilometers away. Across such a large distance, it is definitely possible (and
+in some parts of the world, very likely) that environmental variables will change. 
+For this reason we want a method of assigning effort to each detection that will also
+allow us assign environmental variables that are closer to the location of the call
+rather than just on the trackline. 
+
+To solve this issue, we will change the way that we assign effort to detections. Rather
+than breaking our study area into trackline segments and then assigning detections to
+each segment, we will take our entire study area and break it up in to a grid of smaller
+squares. For each square in the grid we will create an estimate of the amount of effort
+we have surveyed that square using the same detection function as before and the location
+of the ship track. If our ship passes directly through the center of a square, it will have
+a relatively high amount of effort assigned, but if a square falls barely within the detection
+distance of the trackline it will have a much smaller amount of effort assigned. Each detection
+is then naturally assigned to the square in which it is located. The size of the squares can
+be adjusted to be as small as desired, and thus can accomodate any level of granularity in
+the environmental variables to be used in the study.
+
+## Package Functionality
+
+The aim of this package is to take in a dataset with GPS coordinates of a ship track and a
+set of localized detections and create an output that can be used as input for a spatial
+density model. This means that for each detection we need to know the appropriate amount
+of effort to associate with that detection, and the location to associate with that detection
+so that any environmental variables can later be assigned with other functions (such as the
+`matchEnvData` function from the packge `PAMmisc`). 
+
+The first step in this process is to create the grid. We only need to know the total size
+of the grid to create, and how large each individual square should be. Once the grid is created,
+we need to use the path of the ship and the detection function to estimate how much effort
+should be placed in each grid. This is done (in rough terms) by scaling the area surveyed
+by the probability of the detection function. Since detection probability typically 
+decreases with distance, this means grid squares further from the track line will have
+less effort assigned to them. This step can be very time consuming as it involves many
+thousands of calculations across the entire grid, so there is also an intermediate step
+to speed this up. This step involves "connecting" the grid so that each square knows which
+squares it is adjacent to, and it vastly speeds up the processing time required for the
+effort calculations. Once this effort calculation is done, then the last step is to
+see how many detections fall within each grid cell, then our work is done. 
+
+## Data Formatting Requirements
+
+The ship track data must have columns `Longitude`, `Latitude`, `UTC` - the time in POSIXct
+format with time zone UTC, and `effort` - a logical flag indicating which portions of the
+ship track line are considered "On Effort". Off effort locations (marked with `FALSE`) will
+not be used for determining effort. 
+
+The detection data only needs columns `Longitude` and `Latitude` for the localized detection 
+location, but if you want to create a detection function using the `Distance` package then it 
+also needs a column `distance`, the perpendicular distance to the trackline in meters. Alternatively
+you can provide your own detection function that takes in a distance as input and outputs a detection
+probability.
+
+## Package Useage
+
+This package is designed to be extremely user friendly. Once data is in the appropriate format, all
+of the gridding process can be accomplished with a single function call. First we read in our data,
+and examine it to make sure we have the necessary columns.
+
+```{r echo=TRUE, cache=TRUE}
+# First load the functions required
+source('./devel/gridFunctions.R')
+gpsData <- readRDS('ExampleGPS.Rdata')
+str(gpsData)
+detections <- readRDS('ExampleDetections.RData')
+str(detections)
+```
+
+Next we will use the `Distance` package to create a detection function from our detection data.
+Here we'll fit a half-normal detection function and plot the result.
+
+```{r, echo=TRUE, cache=TRUE}
+library(Distance)
+dsModel <- ds(detections, key='hn')
+plot(dsModel)
+```
+
+Now we are ready to calculate the gridded effort. This just requires two more decisions. First we need to
+decide what size the individual grid squares should be. This is set with the `pixel` argument, and
+the units of this are in decimal degrees. We'll create a grid of squares with side length of 0.01 degrees
+for our example, which is approximately 1km x 1km squares. For most applicatons this would be too fine of
+a resolution, usually you would select a size that fits the resolution of any environmental variables you would
+later want to include. So if you wanted to include SST from a dataset that has spatial resolution of 5km, 
+it would make sense to select a pixel size of approximately 5km x 5km. If no value is input for `pixel`, then
+the user will be prompted to select from a few pre-determined options. Second we need to set a truncation distance,
+just like with normal line transect distance sampling. For most applications in acoustics this distance will
+be higher than with visual surveys. This is a synthetic dataset created just for this example, and the detections
+are limited to 10km away, so we will use `10e3` for our truncation distance. 
+
+This function can take quite a bit of time to run, especially for longer tracklines and smaller pixel sizes, so 
+it includes some progress bars to reassure you that your R session hasn't frozen and progress is being made.
+The progress bar has been omitted from this document because it looks awful in RMarkdown, but they'll be there
+when you run the function.
+
+```{r echo=TRUE, results='hide', cache=TRUE}
+gridDataset <- doAllGrid(gps = gpsData,
+                      dets = detections,
+                      trunc_m = 10e3, #METERS
+                      dsmodel=dsModel,
+                      pixel = .01,
+)
+``` 
+
+This creates an output list with 5 items:
+
+```{r echo=TRUE}
+names(gridDataset)
+```
+
+`gps` is the same `gpsData` object we used as input
+
+```{r echo=TRUE}
+str(gridDataset$gps)
+```
+
+`grid` is the grid we created, this can be fed back in to future calls to `doAllGrid` to save
+some time as long as the location and pixel sizes are the same (maybe if you wanted to try
+ a different detection function, or were running multiple models for different species on the
+ same trackline). It is a SpatialFeatures POLYGON object (package `sf`) that has the additional
+ class of `"connectedGrid"` specific to this package.
+
+```{r echo=TRUE}
+class(gridDataset$grid)
+```
+
+`effort` is a list that stores the amount of effort (roughly in units of area meters^2) in each grid
+cell. It also keeps track of some other stuff that is mostly used for debugging. The area is indexed 
+by grid cell number, so the first area value corresponds to the first grid cell. 
+
+```{r echo=TRUE}
+names(gridDataset$effort)
+```
+
+`detections` is the same as the `detections` dataframe we supplied as input, but with a 
+few new columns added. `gridIndex` is the grid number the detection is located in,
+`effortArea` is the amount of effort in that grid, `actualArea` is the actual area
+of the grid cell. Note that it is possible for `effortArea` to be greater than
+`actualArea` if a survey has passed nearby a location multiple times. `gridLongitude`
+and `gridLatitude` are the coordinates of the centroid of the grid cell a detection
+is located in. 
+
+```{r echo=TRUE}
+str(gridDataset$detections)
+```
+
+`dataset` is a dataframe formatted in the way that a modeling dataset likely would be. It has
+one row for every grid cell. `gridIx` is the grid cell index number, `nDetections` is the total
+number of detections in that grid, `Longitude` and `Latitude` are the coordinates of the 
+centroid of each grid cell (similar to `gridLongitude` and `gridLatitude` from `detections`),
+and `effort` is the amount of effort in that grid cell. This dataframe would need to be further
+augmented by environmental variables in order to be useful.
+
+The package also contains a plotting function to show the result of the gridded effort calculations.
+
+```{r echo=TRUE, cache=TRUE}
+plotGridResult(gridDataset)
+```
+
+This plot shows our synthetic survey trackline in blue. Note that the middle section was marked as 
+off effort for this test dataset to mimic how ship based surveys transit between two tracklines, so
+only the two parallel tracks are contributing to effort. Grid cells are shaded according to the amount
+of effort, white being no effort, and darkest grays corresponding to an amount of effort equal to
+or greater than the area of the grid cell. We see that areas near the track line are darker gray, and then 
+as we get further it fades to white. The areas in between the two tracklines get effort from both
+tracklines and are darker than areas a similar distance away that received effort from only one track.
+The red dots signify the locations of our detections.

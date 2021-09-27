@@ -10,6 +10,7 @@ calcEffort <- function(points, grid, n=10, d=4e3, dsmodel, plot=FALSE) {
     if(is.null(attr(grid, 'map'))) {
         grid <- connectGrid(grid)
     }
+    # browser()
     times <- points$times
     points <- points$points
     gridMap <- attr(grid, 'map')
@@ -29,10 +30,9 @@ calcEffort <- function(points, grid, n=10, d=4e3, dsmodel, plot=FALSE) {
     # seq(from=0, to=d, length.out=n+1)
 
     for(i in seq_along(points)) {
-        cat('\rNum', i)
+        # cat('\rNum', i)
         setTxtProgressBar(pb, value=i)
         # mybe check here for any added areaz.
-        # browser()
         newArea <- calcArea(points[[i]][1, ], points[[i]][2, ], grid=grid, detProb = probs, gridMap=gridMap, n=n, d=d, plot=plot)
         whichNew <- which(newArea > 0)
         if(length(whichNew) > 0) {
@@ -114,8 +114,8 @@ calcArea <- function(point1, point2,grid, gridMap, detProb=NULL, n=10, d=4e3, pl
     h1 <- gridLength[, 1:(2*n)]
     # h2 <- gridLength[, 2:(2*n + 1)]
     h2 <- gridLength[, -1]
-    w1 <- probs[1:(2*n)]
-    w2 <- probs[-1]
+    w1 <- rep(probs[1:(2*n)], each = nrow(h1))
+    w2 <- rep(probs[-1], each = nrow(h1))
     # browser()
     areas <- .5*(h1*w1 + h2*w2) - (h1-h2)*(w1-w2)/6
     gridArea <- rowSums(areas) * d / n
@@ -131,15 +131,16 @@ calcArea <- function(point1, point2,grid, gridMap, detProb=NULL, n=10, d=4e3, pl
               y=c(point1[2], point2[2]),
               col = 'black', lwd=2)
     }
-    browser()
+    # 661 and 727 are bad near the centerline
+    # browser()
     gridArea
 }
 
 makeDetLines <- function(point1, point2, n=10, d = 4e3, direction = 90) {
     suppressWarnings({
         pathBearing <- geosphere::bearing(point1, point2)
-        end1 <- geosphere::destPoint(point1, pathBearing + direction, d) %% 360
-        end2 <- geosphere::destPoint(point2, pathBearing + direction, d) %% 360
+        end1 <- geosphere::destPoint(point1, pathBearing + direction, d) #%% 360
+        end2 <- geosphere::destPoint(point2, pathBearing + direction, d)# %% 360
     })
     lats1 <- seq(from = point1[2], to = end1[2], length.out = n + 1)
     longs1 <- seq(from = point1[1], to = end1[1], length.out = n + 1)
@@ -275,6 +276,12 @@ getEndPoints <- function(gps, length=1e3) {
     if(!('effort' %in% colnames(gps))) {
         stop('Gps data must have an "effort" column that is TRUE/FALSE')
     }
+    
+    # THIS ISNT WORKING RIGHT - SKIPS GAP BETWEEN DETECTION GROUPS
+    # THIS IS MAGNIFIED WHEN LOTS OF DET GROUPS
+    
+    # ALSO DOESNT WORK FOR LARGE GAPS BETWEEN GPS BUT THESE SHOULD BE STRAIGHT
+    
     # gps$aeffort <- ifelse(gps$aeffort == 'off', FALSE, TRUE)
     # gps$overallEffort <- gps$straight & gps$aeffort
     # gps$alt <- gps$overallEffort[c(1, 1:(nrow(gps)-1))] != gps$overallEffort
@@ -283,27 +290,49 @@ getEndPoints <- function(gps, length=1e3) {
     # gps$approxDist <- gps$timeDiff * gps$Speed * .51444
     gps$approxDist <- geosphere::distGeo(gps[c(1, 1:(nrow(gps)-1)), c('Longitude', 'Latitude')],
                                          gps[,c('Longitude', 'Latitude')])
+    
     gps <- gps %>%
         filter(effort) %>%
         group_by(effGroup) %>%
         mutate(distGroup = ceiling(cumsum(approxDist) / length)) %>%
         ungroup() %>%
         mutate(distGroup = paste0(effGroup, '_', distGroup))
-    # browser()
-    result <- lapply(split(gps, gps$distGroup), function(x) {
+    
+    result <- lapply(split(gps, gps$effGroup), function(x) {
         if(nrow(x) == 1) return(NULL)
-        tmp <- as.matrix(x[c(1, nrow(x)), c('Longitude', 'Latitude')])
-        attr(tmp, 'dimnames') <- NULL
-        tmp
+        tmp <- group_by(x, distGroup) %>% 
+            slice(1) %>% ungroup() %>% data.frame()
+        tmp <- rbind(tmp, tail(x, 1))
+        tmp <- arrange(tmp, UTC) %>% distinct()
+        res <- lapply(1:(nrow(tmp)-1), function(y) {
+            mat <- as.matrix(tmp[y:(y+1), c('Longitude', 'Latitude')], ncol=2)
+            attr(mat, 'dimnames') <- NULL
+            mat
+        })
+        list(points=res, times=tmp$UTC[1:(nrow(tmp)-1)])
+        # tmp <- as.matrix(tmp[c('Longitude', 'Latitude')], ncol=2)
+        # attr(tmp, 'dimnames') <- NULL
+        # tmp
     })
-    times <- group_by(gps, distGroup) %>%
-        summarise(time = min(UTC))
-    whichNotNull <- sapply(result, function(x) !is.null(x))
-    times <- times$time[whichNotNull]
-    result <- result[whichNotNull]
-    timeOrder <- order(times)
+    points <- unlist(lapply(result, function(x) x$points), recursive = FALSE)
+    times <- do.call(c, lapply(result, function(x) x$times))
+    names(times) <- NULL
+    # resultOld <- lapply(split(gps, gps$distGroup), function(x) {
+    #     if(nrow(x) == 1) return(NULL)
+    #     tmp <- as.matrix(x[c(1, nrow(x)), c('Longitude', 'Latitude')])
+    #     attr(tmp, 'dimnames') <- NULL
+    #     tmp
+    # })
+    # browser()
+    # times <- group_by(gps, distGroup) %>%
+    #     summarise(time = min(UTC))
+    # whichNotNull <- sapply(result, function(x) !is.null(x))
+    # times <- times$time[whichNotNull]
+    # result <- result[whichNotNull]
+    # timeOrder <- order(times)
     # result[sapply(result, function(x) !is.null(x))]
-    list(points=result[timeOrder], times=times[timeOrder])
+    # list(points=result[timeOrder], times=times[timeOrder])
+    list(points=points, times=times)
 }
 
 makeGrid <- function(x, pixel=NULL, buffer_m=0, plot=FALSE) {
@@ -542,12 +571,15 @@ doAllGrid <- function(gps, dets, bounds=NULL, trunc_m, dsmodel=NULL, pixel=NULL,
     #     if(cont == 2) return(NULL)
     # }
     #
+    
     if(is.character(gps)) {
         gps <- read.csv(gps, stringsAsFactors = FALSE)
     }
     if(is.character(dets)) {
         dets <- read.csv(dets, stringsAsFactors = FALSE)
     }
+    is180 <- PAMmisc:::dataIs180(dets)
+    gps <- PAMmisc:::to180(gps, inverse = !is180)
     # if(any(dets$distance) > 100) {
     #     warning('Detection ')
     # }
@@ -577,22 +609,40 @@ doAllGrid <- function(gps, dets, bounds=NULL, trunc_m, dsmodel=NULL, pixel=NULL,
     if(is.null(grid)) {
         grid <- makeGrid(boundary, pixel = pixel, buffer_m = trunc_m * 1.05, plot = plot) # did with .09
     }
+    if(!is180) {
+        grid <- st_shift_longitude(grid)
+    }
     if(inherits(grid, 'connectedGrid')) {
         conGrid <- grid
     } else {
         conGrid <- connectGrid(grid, pbshow = TRUE) # this takes long, add prog bar?
     }
+    
     # this needs "effort" column, so we do this first
     ends <- getEndPoints(gps, length = 1e3) # length of segs to break into, less should more accurato
     # browser()
-    effort <- calcEffort(points=ends, grid=conGrid, n=10, d=trunc_m, dsmodel=dsmodel)
+    effort <- calcEffort(points=ends, grid=conGrid, n=50, d=trunc_m, dsmodel=dsmodel, plot=plot)
     detGridIx <- sapply(1:nrow(dets), function(x) {
         searchPoint(c(dets$Longitude[x], dets$Latitude[x]), grid = conGrid, gridMap = attr(conGrid, 'map'))
     })
     dets$gridIndex <- detGridIx
     dets$effortArea <- effort$area[detGridIx]
     dets$actualArea <- as.numeric(st_area(conGrid[detGridIx]))
-    result <- list(gps=gps, grid=conGrid, effort=effort, detections=dets)
+    detGridCoords <- sapply(conGrid[detGridIx], st_centroid)
+    dets$gridLongitude <- detGridCoords[1, ]
+    dets$gridLatitude <- detGridCoords[2, ]
+    
+    dataset <- data.frame(gridIx = 1:length(conGrid))
+    dataset$nDetections <- 0
+    tableDets <- table(dets$gridIndex)
+    for(i in seq_along(tableDets)) {
+        dataset$nDetections[dataset$gridIx == as.numeric(names(tableDets[i]))] <- tableDets[i]
+    }
+    coords <- sapply(conGrid, st_centroid)
+    dataset$Longitude <- coords[1, ]
+    dataset$Latitude <- coords[2, ]
+    dataset$effort <- effort$area
+    result <- list(gps=gps, grid=conGrid, effort=effort, detections=dets, dataset=dataset)
     # browser()
 
     if(plot) {

@@ -1,0 +1,139 @@
+---
+title: "Dive Depth Estimation"
+author: "Taiki Sakai"
+date: "9/27/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background
+
+For most marine mammal species, when their sounds are localized their location is
+assumed to be at or near the surface of the water. This is generally an assumption
+that is close enough to be accurate, but for deep diving species like sperm whales
+and beaked whales this is not the case. These animals can be vocalizing from depths
+significant enough to affect the outcome of the localization algorithm. Since we 
+cannot typically directly measure the depth of a calling animal, one must either 
+be estimated or assumed based on past knowledge of calling behaviour. 
+
+One way that dive depth can be estimated from acoustic data is through the
+presence of surface echoes in recordings. A hydrophone at depth will receive the
+original call from the animal first, and in some cases this same sound will
+reflect across the surface of the water and back down to the same hydrophone.
+If we know the depth of the hydrophone, then the timing of this echo relative
+to the original call can give us an estimate of the depth of the original call.
+If the difference between echo and signal is very small, then the call originated 
+near the surface. If the difference is closer to the maximum possible echo timing
+(the time it would take a sound to travel from the hydrophone, to the surface, and
+back), then the animal is directly beneath the hydrophone. This additional piece of
+information is critical in providing a more accurate 3-dimensional localisation. 
+
+This process involves many steps that combine information from many different sources.
+We need to be able to get clips of our detections that are long enough to contain any
+potential echoes. Each of these clips must be paired with the hydrophone depth at
+the time of detection, as well as accounting for the potential maximum sea surface height.
+For sea surface height we will use the Beaufort sea state reported by visual observers
+to estimate the maximum potential height. Each clip should also be paired with an initial
+localization estimate. All this information will be passed on to an algorithm developed
+by researchers at the Northeast Fisheries Science Center to then be analyzed to 
+compute estimated dive depths.
+
+## Package Functionality
+
+The goal of this package is to take care most of the dirty work of pairing together
+disparate data sources in preparation for more advanced modeling scenarios. In the
+future it might be expanded to include more of the modeling steps, but even in its
+current format this saves tens of hours of manual labor for each analysis. Much of
+the work of aligning various sources to individual detections is accomplished with
+another package we have developed, PAMpal. First we will read in an `AcousticStudy`
+object that has already been through the basic PAMpal processing step.
+
+```{r echo=TRUE}
+source('./devel/diveDepthFunctions.R')
+data <- readRDS('exampleStudy.RData')
+```
+
+Now we will use more of PAMpal's function to create an initial set of longer clips
+of each detection in this dataset. This data was initially processed with the 
+software Pamguard (a pre-requisite for using PAMpal), which does save small clips
+of each click detection. However, these clips are far too short to contain any 
+potential echoes, so we need to connect our detections back to the original recording
+files and then create a set of longer clips from these
+
+```{r echo=TRUE, cache=TRUE}
+# First we point PAMpal the recording folder
+data <- addRecordings(data, folder = '../Data/AMTask/3D2PAMr_test_files/Recordings/', log=FALSE, progress = FALSE)
+# Then we create a set of clips of length 0.2 seconds. The option useSample = TRUE allows for more accurate
+# timing, which is important when dealing with extremely short clicks
+clipDir <- './WavClips'
+wavs <- writeEventClips(data, 
+                        buffer = c(0, 0.2),
+                        outDir = clipDir,
+                        mode = 'detection', 
+                        channel = 5,
+                        useSample = TRUE,
+                        progress=FALSE)
+```
+
+Next we will use PAMpal's other functions to connect the GPS, hydrophone depth, and
+species information to our detections. Species information is used to provide a 
+different set of filters based on the species being studied - different animals 
+produce sounds with different frequency characteristics that we will want to hone 
+in on. This test dataset is an example of a single event that was identified as 
+True's beaked whales.
+
+```{r echo=TRUE, cache=TRUE}
+data <- setSpecies(data, method='manual', value='trues')
+data <- addGps(data)
+data <- addHydrophoneDepth(data)
+```
+
+The final steps are accomplished using functions from this package. We will connect
+the Beaufort seastate using a spreadsheet of visual observer effort data, and then
+create the table of information needed connecting all these pieces with the function
+`export_diveDepthNEFSC`. This function creates a table with all the various connected
+pieces, and also creates a set of shorter clips for each detection. It also creates 
+a series of images that can be briefly scanned to determine if echoes are potentially
+present in this dataset, since this is not guaranteed to occur.
+
+```{r echo=TRUE, cache=TRUE}
+# Effort spreadsheet with sea state information
+effortTable <- '../Data/AMTask/HB1603beaufort_effort.xlsx'
+# We create much shorter clips for the next step of analysis
+# We also provide the soundspeed, which can be approximate or use in situ
+# or modelled values if available, as well as a term describing how accurate
+# the depth sensor is (higher is less accurate)
+depthOutputs <- export_diveDepthNEFSC(data,
+                              outDir = NULL,
+                              file = NULL,
+                              wavFolder = clipDir,
+                              effort = effortTable,
+                              clipLength = .03, 
+                              soundSpeed = 1500, 
+                              depthSensAcc = 1,
+                              progress=FALSE)
+```
+
+This function writes the necessary files to disk, but also stores them in the output.
+`wavMat` contains a matrix of the shorter waveform clips created, with each separate clip 
+in its own column.
+
+```{r echo=TRUE, cache=TRUE}
+plot(depthOutputs$wavMat[, 31], type='l')
+```
+
+`table` contains the table of information needed to pass along to the next modeling step,
+and `file` is the name of this same file created on disk.
+
+```{r echo=TRUE}
+str(depthOutputs$table)
+```
+
+These two pieces of data are now ready to be passed along to the next step to estimate
+the dive depths of each detection, which will improve the localisation and thus any 
+future density estimates the localisations are used for.
